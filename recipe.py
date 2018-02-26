@@ -2,7 +2,6 @@ from bs4 import BeautifulSoup
 import requests
 from collections import OrderedDict
 import re
-# import pandas as pd
 import datetime
 import json
 import os
@@ -10,11 +9,32 @@ import shlex
 import sys
 from subprocess import Popen, PIPE
 
-NUM_PAGES = 25
+
 NOW = datetime.datetime.now()
 _MAX_ATTEMPTS = 10
 _DELAY = .1
 _TMP_PATH = "/tmp/qri/"
+
+QRI_COMMAND_TEMPLATE="""qri {action} \
+--data "{DATA_PATH}" \
+--structure "{STRUCTURE_PATH}" \
+--meta "{META_PATH}" \
+me/{DATASET_NAME}
+"""
+
+# get variables from env
+try:  
+   DATASET_NAME   = os.environ["r_dataset_name"]
+   TARGET_URL     = os.environ["r_target_url"]
+   DATA_PATH      = os.environ["r_data_path"]
+   STRUCTURE_PATH = os.environ["r_structure_path"]
+   META_PATH      = os.environ["r_meta_path"]
+   CITY_NAME      = os.environ["r_default_location"]
+   NUM_PAGES      = int(os.environ["r_num_pages"])
+   # test_run       = True if os.environ["r_test"] == "True" else False
+except KeyError as e: 
+   print "Please ensure all required environment variales are set: missing {}".format(e)
+   sys.exit(1)
 
 # data retrieval -----------------------------------------------------  
 
@@ -93,7 +113,7 @@ def string_as_date_string(s):
         return date_string
     except:
         return None
-# --------------------------------------------------------------------
+# shell execution-----------------------------------------------------
 def _shell_exec_once(command):
     proc = Popen(shlex.split(command), stdin=PIPE, stdout=PIPE, stderr=PIPE)
     stdoutdata, err = proc.communicate()
@@ -111,10 +131,38 @@ def _shell_exec(command):
     return stdoutdata
 
 # --------------------------------------------------------------------
+def _dataset_exists(DATASET_NAME):
+    cmd = "qri info me/{} | grep ^error".format(DATASET_NAME)
+    result = _shell_exec(cmd)
+    if result == "":
+        return True
+    else:
+        return False
+
+def add_or_save_to_qri():
+    action = "add"
+    if _dataset_exists(DATASET_NAME):
+        #add commit message and choose 'save'
+        date_string = datetime.datetime.strftime(NOW, "%Y-%m-%dT%H:%M:%S")
+        message = "recipe update @ {}".format(date_string)
+        action = "save -m=\"{}\"".format(message)
+    params = dict(
+        action=action,
+        DATA_PATH=DATA_PATH,
+        STRUCTURE_PATH=STRUCTURE_PATH,
+        META_PATH=META_PATH,
+        DATASET_NAME=DATASET_NAME,
+        )
+    cmd = QRI_COMMAND_TEMPLATE.format(**params)
+    result = _shell_exec(cmd)
+    print(result)
+    #print cmd
+
+# --------------------------------------------------------------------
 
 def main():
     # url
-    url = "https://newyork.craigslist.org/search/nfb"
+    url = TARGET_URL
     # fields and processing
     item_fields= [
         (u"result-title", u"text", u"title", None, None),
@@ -141,9 +189,6 @@ def main():
         page_data = parse_page_items(page_items, item_fields, page_num)
         results += page_data
 
-
-    # df = pd.DataFrame.from_records(results)
-    # df.to_csv("data.csv", index=False, encoding='utf-8')
     #as json
     jsontable = list()
     for r in results:
@@ -152,7 +197,7 @@ def main():
         od[u"url"] = r["url"]
         loc = OrderedDict()
         loc["name"] = r["neighborhood"]
-        loc["containedInPlace"] = {"name": "New York City"}
+        loc["containedInPlace"] = {"name": CITY_NAME}
         od[u"containedIn"] = loc
         price = OrderedDict()
         price["name"] = "price"
@@ -161,13 +206,14 @@ def main():
         od[u"additionalProperty"] = price
         od[u"date"] = r["date"]
         jsontable.append(od)
-    with open("data.json", "w") as fp:
+    if os.path.exists(DATA_PATH):
+        cmd = "mv {path} prev_{path}".format(path=DATA_PATH)
+        _shell_exec(cmd)
+    with open(DATA_PATH, "w") as fp:
         fp.write(json.dumps(jsontable, indent=2))
     # save to qri
-    cmd = "qri add --data data.json --structure structure.json me/craigslist"
-    response = _shell_exec(cmd)
-    print ""
-    print response
+    add_or_save_to_qri()
+
 
 
 if __name__ == "__main__":
